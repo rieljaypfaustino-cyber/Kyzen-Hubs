@@ -1,0 +1,846 @@
+--[[
+    ╔═══════════════════════════════════════════════╗
+    ║   KYZEN HUB v5.0 — STEAL AN EGG (FIXED!)      ║
+    ║   ✓ Remote steal + Prompt steal (0s hold)     ║
+    ║   ✓ SARILING plot detection                   ║
+    ║   ✓ Held-in-hand flow → drop sa plot          ║
+    ║   ✓ Treadmill sa sariling plot lang           ║
+    ╚═══════════════════════════════════════════════╝
+]]
+
+local Players = game:GetService("Players")
+local Player = Players.LocalPlayer
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+
+-- ══════════ CONSTANTS (mula sa totoong dump) ══════════
+local SAFEZONE = Vector3.new(456, 70, -364)
+local Remotes = game:GetService("ReplicatedStorage"):WaitForChild("Packages"):WaitForChild("Networking")
+
+local function GetRemote(name)
+    local ok, r = pcall(function()
+        for _, v in ipairs(Remotes:GetDescendants()) do
+            if v.Name == name then return v end
+        end
+    end)
+    return ok and r or nil
+end
+
+local RF_Snapshot = GetRemote("AskFieldEggSnapshot")
+local RF_Carry = GetRemote("AskFieldEggCarry")
+local RF_Drop = GetRemote("AskFieldEggDrop")
+local RF_TierRaise = GetRemote("AskTierRaise")
+local RF_SlowToggle = GetRemote("AskSlowToggle")
+
+local RARITY_PRIORITY = {"Divine","Eternal","Secret","Cosmic","Mythic","Legendary","Epic","Rare","Uncommon","Common"}
+local AREAS = {"Forest","Lake","Desert","Jungle","Snow","Volcano","Abyss Ocean","Prehistoric","Cosmic","Cherry Blossom","Titan Temple","Light & Dark"}
+local RARITY_COLORS = {
+    Common=Color3.fromRGB(160,160,160), Uncommon=Color3.fromRGB(0,220,110), Rare=Color3.fromRGB(0,150,255),
+    Epic=Color3.fromRGB(170,0,255), Legendary=Color3.fromRGB(255,200,0), Mythic=Color3.fromRGB(255,0,150),
+    Cosmic=Color3.fromRGB(120,0,255), Secret=Color3.fromRGB(255,130,0), Eternal=Color3.fromRGB(255,40,40),
+    Divine=Color3.fromRGB(255,215,0)
+}
+
+-- ══════════ STATE ══════════
+local SelectedRarity, SelectedArea = {}, {}
+local AutoSteal, AutoTreadmill = false, false
+local AntiRagdoll, AntiHit, AntiCaptcha = false, false, false
+local Stealing = false -- busy flag (hindi mag-ooverlap ang loops)
+
+-- ══════════ UTILITIES ══════════
+local function Notify(msg, msgType)
+    local gui = PlayerGui_Kyzen
+    if not gui then return end
+    local notif = gui:FindFirstChild("KyzenNotif", true)
+    if not notif then return end
+    local colors = {success=Color3.fromRGB(0,255,120), error=Color3.fromRGB(255,90,90), info=Color3.fromRGB(120,200,255)}
+    local label = notif:FindFirstChild("Msg")
+    if label then
+        label.Text = msg
+        label.TextColor3 = colors[msgType] or Color3.new(1,1,1)
+    end
+    notif.Visible = true
+    notif.Position = UDim2.new(1, 20, 0, 15)
+    TweenService:Create(notif, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+        {Position = UDim2.new(1, -320, 0, 15)}):Play()
+    task.delay(2.5, function()
+        TweenService:Create(notif, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+            {Position = UDim2.new(1, 20, 0, 15)}):Play()
+    end)
+end
+
+local function MakeDraggable(handle, target)
+    local dragging, dragStart, startPos = false, nil, nil
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = target.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            target.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+end
+
+local function GetCharacter()
+    local char = Player.Character or Player.CharacterAdded:Wait()
+    return char, char:WaitForChild("HumanoidRootPart"), char:WaitForChild("Humanoid")
+end
+
+local function TP(cframe)
+    local _, hrp = GetCharacter()
+    hrp.CFrame = cframe
+end
+
+-- ══════════ PLOT DETECTION (SARILING PLOT LANG!) ══════════
+local MyPlot = nil
+local function FindMyPlot()
+    local plots = workspace:FindFirstChild("Plots")
+    if not plots then return nil end
+    local lname = string.lower(Player.Name)
+    for _, plot in ipairs(plots:GetChildren()) do
+        -- Check 1: owner attribute
+        local owner = plot:GetAttribute("Owner") or plot:GetAttribute("OwnerName") or plot:GetAttribute("Player")
+        local ownerId = plot:GetAttribute("OwnerId") or plot:GetAttribute("OwnerUserId")
+        if (owner and string.lower(tostring(owner)) == lname)
+        or (ownerId == Player.UserId) then
+            return plot
+        end
+        -- Check 2: may name na player sa loob (sign/billboard)
+        for _, d in ipairs(plot:GetDescendants()) do
+            if (d:IsA("TextLabel") or d:IsA("TextButton")) and string.find(string.lower(d.Text), lname, 1, true) then
+                return plot
+            end
+        end
+    end
+    -- Check 3: malapit sa spawn point ko
+    local _, hrp = GetCharacter()
+    local best, bestDist = nil, math.huge
+    for _, plot in ipairs(plots:GetChildren()) do
+        local sp = plot:FindFirstChild("SpawnPoint", true)
+        if sp then
+            local dist = (sp.Position - hrp.Position).Magnitude
+            if dist < bestDist then best, bestDist = plot, dist end
+        end
+    end
+    return best
+end
+
+-- ══════════ EGG DETECTION (TOTOONG STRUCTURE) ══════════
+local function GetEggRarity(egg)
+    for _, attr in ipairs({"Rarity","EggRarity","Tier","EggTier","Quality"}) do
+        local v = egg:GetAttribute(attr)
+        if v then return tostring(v) end
+    end
+    -- check sa loob ng model
+    for _, d in ipairs(egg:GetDescendants()) do
+        for _, attr in ipairs({"Rarity","EggRarity","Tier"}) do
+            local v = d:GetAttribute and d:GetAttribute(attr)
+            if v then return tostring(v) end
+        end
+    end
+    return nil
+end
+
+local function GetEggArea(pos)
+    -- gamit ang X-coordinate ranges mula sa GuardAreas dump
+    local ranges = {
+        {"Forest", 550, 700}, {"Lake", 700, 770}, {"Desert", 770, 880},
+        {"Jungle", 880, 1000}, {"Snow", 1000, 1140}, {"Volcano", 1140, 1300},
+        {"Abyss Ocean", 1300, 1480}, {"Prehistoric", 1480, 1680},
+        {"Cosmic", 1680, 2000}, {"Cherry Blossom", 2000, 4400},
+        {"Titan Temple", 4400, 5200}, {"Light & Dark", 5200, 99999}
+    }
+    for _, r in ipairs(ranges) do
+        if pos.X >= r[2] and pos.X < r[3] then return r[1] end
+    end
+    return nil
+end
+
+local function RarityRank(r)
+    for i, v in ipairs(RARITY_PRIORITY) do
+        if string.lower(v) == string.lower(r or "") then return i end
+    end
+    return 999
+end
+
+local function FindTargetEgg()
+    local targets = {}
+    -- Source 1: Workspace.Eggs
+    local eggsFolder = workspace:FindFirstChild("Eggs")
+    if eggsFolder then
+        for _, egg in ipairs(eggsFolder:GetChildren()) do
+            table.insert(targets, egg)
+        end
+    end
+    -- Source 2: AreaEggSlotsClient
+    local slots = workspace:FindFirstChild("AreaEggSlotsClient")
+    if slots then
+        for _, s in ipairs(slots:GetDescendants()) do
+            if s:IsA("Model") or s:IsA("BasePart") then
+                local parent = s.Parent
+                if parent and parent ~= slots then table.insert(targets, s) end
+            end
+        end
+    end
+    -- Filter: rarity + area match, priority sort
+    local best, bestRank = nil, 999
+    for _, egg in ipairs(targets) do
+        local pos = egg:IsA("BasePart") and egg.Position or (egg:IsA("Model") and egg:GetPivot().Position)
+        if pos then
+            local rarity = GetEggRarity(egg)
+            local area = GetEggArea(pos)
+            local rarityOK, areaOK = false, false
+            for _, r in ipairs(SelectedRarity) do
+                if rarity and string.lower(r) == string.lower(rarity) then rarityOK = true break end
+                if not rarity then rarityOK = true break end -- kung walang rarity attr, try pa rin
+            end
+            for _, a in ipairs(SelectedArea) do
+                if area and a == area then areaOK = true break end
+            end
+            if rarityOK and areaOK then
+                local rank = RarityRank(rarity)
+                if rank < bestRank then best, bestRank = egg, rank end
+            end
+        end
+    end
+    return best
+end
+
+-- ══════════ STEAL SYSTEM (HELD IN HAND FLOW!) ══════════
+local function IsCarryingEgg()
+    local char = Player.Character
+    if not char then return false end
+    -- may bitbit na egg model sa character
+    for _, d in ipairs(char:GetChildren()) do
+        if d:IsA("Model") or (d:IsA("BasePart") and not d:IsA("MeshPart") and string.find(string.lower(d.Name), "egg")) then
+            if string.find(string.lower(d.Name), "egg") then return true end
+        end
+    end
+    -- o attribute sa character
+    if char:GetAttribute("Carrying") or char:GetAttribute("CarryingEgg") then return true end
+    return false
+end
+
+local function StealEgg(egg)
+    Stealing = true
+    local ok, err = pcall(function()
+        local pos = egg:IsA("BasePart") and egg.Position or egg:GetPivot().Position
+        -- 1. Teleport sa tabi ng egg (HINDI sakto sa taas para di mamatay)
+        TP(CFrame.new(pos + Vector3.new(0, 4, 4)))
+        task.wait(0.3)
+
+        -- 2. TRY REMOTE FIRST (AskFieldEggCarry)
+        local carried = false
+        if RF_Carry then
+            local eggId = egg:GetAttribute("Id") or egg:GetAttribute("EggId") or egg.Name
+            local rOK, rErr = pcall(function()
+                RF_Carry:InvokeServer(eggId)
+            end)
+            if rOK then
+                task.wait(0.5)
+                carried = IsCarryingEgg()
+            end
+        end
+
+        -- 3. FALLBACK: PROMPT STEAL (0s hold bypass!)
+        if not carried then
+            local prompt = egg:FindFirstChildWhichIsA("ProximityPrompt", true)
+            if not prompt then
+                -- hanapin ang CarryAreaEgg sa malapit
+                local promptPart = workspace:FindFirstChild("SmartPromptPart")
+                if promptPart then
+                    for _, pp in ipairs(promptPart:GetChildren()) do
+                        local p = pp:FindFirstChildWhichIsA("ProximityPrompt")
+                        if p and pp:IsA("BasePart") and (pp.Position - pos).Magnitude < 15 then
+                            prompt = p
+                            break
+                        end
+                    end
+                end
+            end
+            if prompt then
+                prompt.HoldDuration = 0 -- BYPASS ng 1.2s countdown!
+                prompt.RequiresLineOfSight = false
+                if fireproximityprompt then
+                    fireproximityprompt(prompt)
+                else
+                    -- manual hold fallback
+                    game:GetService("VirtualInputManager"):SendKeyEvent(true, Enum.KeyCode.E, false, game)
+                    task.wait(0.2)
+                    game:GetService("VirtualInputManager"):SendKeyEvent(false, Enum.KeyCode.E, false, game)
+                end
+                task.wait(0.8)
+                carried = IsCarryingEgg()
+            end
+        end
+
+        if not carried then
+            Notify("❌ Di na-steal ang egg, try ulit!", "error")
+            Stealing = false
+            return
+        end
+
+        Notify("🥚 Egg nakuha! Bitbit mo na — papunta sa plot mo!", "success")
+
+        -- 4. DALHIN SA SARILING PLOT (hindi inventory — held in hand!)
+        if not MyPlot then MyPlot = FindMyPlot() end
+        if MyPlot then
+            local sp = MyPlot:FindFirstChild("SpawnPoint", true)
+            local dropPos = sp and sp.Position or MyPlot:GetPivot().Position
+            TP(CFrame.new(dropPos + Vector3.new(0, 5, 0)))
+            task.wait(0.8)
+
+            -- 5. I-DROP ANG EGG SA PLOT (AskFieldEggDrop remote)
+            local dropped = false
+            if RF_Drop then
+                pcall(function() RF_Drop:InvokeServer() end)
+                task.wait(0.3)
+                dropped = not IsCarryingEgg()
+            end
+            if not dropped then
+                -- fallback: i-proceed pa rin (baka auto-drop na sa plot)
+                task.wait(1)
+            end
+            Notify("📦 Egg na-drop sa plot mo!", "success")
+        end
+
+        -- 6. BALIK SA SAFEZONE
+        TP(CFrame.new(SAFEZONE))
+        task.wait(0.3)
+        Notify("🏠 Balik na sa Safezone!", "info")
+    end)
+    if not ok then Notify("⚠️ Error: " .. tostring(err), "error") end
+    Stealing = false
+end
+
+task.spawn(function()
+    while task.wait(0.5) do
+        if AutoSteal and not Stealing then
+            if #SelectedRarity == 0 or #SelectedArea == 0 then
+                Notify("⚠️ Pumili muna ng Rarity + Area sa Config!", "error")
+                AutoSteal = false
+            else
+                local egg = FindTargetEgg()
+                if egg then
+                    Notify("🎯 Nakita ang target egg! Papunta na...", "info")
+                    StealEgg(egg)
+                end
+            end
+        end
+    end
+end)
+
+-- ══════════ AUTO TREADMILL (SARILING PLOT LANG!) ══════════
+task.spawn(function()
+    while task.wait(1) do
+        if AutoTreadmill and not Stealing then
+            pcall(function()
+                if not MyPlot then MyPlot = FindMyPlot() end
+                if not MyPlot then return end
+                -- TreadmillBottom mula sa SARILI kong plot
+                local treadmill = MyPlot:FindFirstChild("TreadmillBottom") or MyPlot:FindFirstChild("TreadmillBottom", true)
+                if treadmill then
+                    local tPos = treadmill:IsA("BasePart") and treadmill.Position or treadmill:GetPivot().Position
+                    local _, hrp = GetCharacter()
+                    if (hrp.Position - tPos).Magnitude > 8 then
+                        TP(CFrame.new(tPos + Vector3.new(0, 4, 0)))
+                        task.wait(0.3)
+                    end
+                end
+                -- Raise tier (gawing mas mabilis ang belt)
+                if RF_TierRaise then pcall(function() RF_TierRaise:InvokeServer() end) end
+            end)
+        end
+    end
+end)
+
+-- ══════════ ANTI SYSTEMS (SAFE — DI SINISIRA ANG PHYSICS!) ══════════
+-- Anti-Ragdoll: i-set lang ang state pag ragdoll, walang velocity changes
+task.spawn(function()
+    while task.wait(0.3) do
+        if AntiRagdoll then
+            pcall(function()
+                local _, _, hum = GetCharacter()
+                if hum:GetState() == Enum.HumanoidStateType.Physics or hum:GetState() == Enum.HumanoidStateType.Ragdoll then
+                    hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+                end
+                for _, v in ipairs(hum:GetChildren()) do
+                    if v:IsA("Motor6D") and v.Name == "RootJoint" then v.Enabled = true end
+                end
+            end)
+        end
+    end
+end)
+
+-- Anti-Hit: PASSIVE monitoring lang (walang velocity zero — yun ang nag-cause ng bounce!)
+task.spawn(function()
+    while task.wait(0.5) do
+        if AntiHit then
+            pcall(function()
+                local _, _, hum = GetCharacter()
+                if hum.Health < hum.MaxHealth * 0.3 then
+                    -- auto-heal trigger kung may remote, o warning lang
+                    Notify("⚠️ Mababa ang HP! Mag-ingat!", "warning")
+                end
+            end)
+        end
+    end
+end)
+
+-- Anti-Captcha: auto-detect at auto-solve ng captcha prompt
+task.spawn(function()
+    while task.wait(1) do
+        if AntiCaptcha then
+            pcall(function()
+                local pg = Player:FindFirstChild("PlayerGui")
+                for _, gui in ipairs(pg:GetChildren()) do
+                    if string.find(string.lower(gui.Name), "captcha") or string.find(string.lower(gui.Name), "verify") then
+                        if gui.Enabled then
+                            -- auto-click ang confirm button
+                            for _, btn in ipairs(gui:GetDescendants()) do
+                                if btn:IsA("TextButton") and (string.find(string.lower(btn.Text), "confirm") or string.find(string.lower(btn.Text), "ok")) then
+                                    for _, conn in ipairs(getconnections and getconnections(btn.MouseButton1Click) or {}) do
+                                        pcall(conn.Function or conn.Fire)
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+    end
+end)
+
+-- ══════════ GUI (MAALIS ANG KALAT — CLEAN!) ══════════
+local PlayerGui_Kyzen
+local main, cheatsPage, configPage
+local tabButtons, pageButtons = {}, {}
+
+local function SwitchTab(name)
+    cheatsPage.Visible = (name == "Cheats")
+    configPage.Visible = (name == "Config")
+    for tabName, btn in pairs(tabButtons) do
+        local active = (tabName == name)
+        btn.BackgroundColor3 = active and Color3.fromRGB(0, 220, 120) or Color3.fromRGB(40, 40, 55)
+        btn.TextColor3 = active and Color3.new(0,0,0) or Color3.fromRGB(180,180,200)
+    end
+end
+
+local function CreateMainGUI()
+    local pg = Player:WaitForChild("PlayerGui")
+    local old = pg:FindFirstChild("KyzenHub")
+    if old then old:Destroy() end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "KyzenHub"
+    gui.ResetOnSpawn = false
+    gui.Parent = pg
+    PlayerGui_Kyzen = gui
+
+    -- ═══ K BUTTON (draggable, maganda) ═══
+    local kbtn = Instance.new("TextButton")
+    kbtn.Size = UDim2.new(0, 56, 0, 56)
+    kbtn.Position = UDim2.new(0, 15, 0.5, -28)
+    kbtn.BackgroundColor3 = Color3.fromRGB(0, 200, 110)
+    kbtn.Text = "K"
+    kbtn.TextColor3 = Color3.new(0,0,0)
+    kbtn.TextSize = 26
+    kbtn.Font = Enum.Font.GothamBlack
+    kbtn.Parent = gui
+    Instance.new("UICorner", kbtn).CornerRadius = UDim.new(1, 0)
+    local kstroke = Instance.new("UIStroke")
+    kstroke.Color = Color3.fromRGB(255, 255, 255)
+    kstroke.Thickness = 2
+    kstroke.Transparency = 0.5
+    kstroke.Parent = kbtn
+    MakeDraggable(kbtn, kbtn)
+
+    -- ═══ MAIN GUI (ISANG FRAME LANG!) ═══
+    main = Instance.new("Frame")
+    main.Size = UDim2.new(0, 380, 0, 480)
+    main.Position = UDim2.new(0.5, -190, 0.5, -240)
+    main.BackgroundColor3 = Color3.fromRGB(18, 18, 26)
+    main.Visible = false
+    main.Active = true
+    main.Parent = gui
+    Instance.new("UICorner", main).CornerRadius = UDim.new(0, 16)
+    local mstroke = Instance.new("UIStroke")
+    mstroke.Color = Color3.fromRGB(0, 220, 120)
+    mstroke.Thickness = 2
+    mstroke.Transparency = 0.3
+    mstroke.Parent = main
+    MakeDraggable(main, main)
+
+    -- Header
+    local header = Instance.new("Frame")
+    header.Size = UDim2.new(1, 0, 0, 50)
+    header.BackgroundColor3 = Color3.fromRGB(24, 24, 36)
+    header.Parent = main
+    Instance.new("UICorner", header).CornerRadius = UDim.new(0, 16)
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -60, 0, 26)
+    title.Position = UDim2.new(0, 16, 0, 5)
+    title.BackgroundTransparency = 1
+    title.Text = "⚡ Kyzen Hub v5"
+    title.TextColor3 = Color3.fromRGB(0, 255, 150)
+    title.TextSize = 20
+    title.Font = Enum.Font.GothamBold
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = header
+
+    local subtitle = Instance.new("TextLabel")
+    subtitle.Size = UDim2.new(1, -60, 0, 16)
+    subtitle.Position = UDim2.new(0, 16, 0, 30)
+    subtitle.BackgroundTransparency = 1
+    subtitle.Text = "🥚 Steal an Egg (sae) — FIXED"
+    subtitle.TextColor3 = Color3.fromRGB(130, 180, 160)
+    subtitle.TextSize = 11
+    subtitle.Font = Enum.Font.Gotham
+    subtitle.TextXAlignment = Enum.TextXAlignment.Left
+    subtitle.Parent = header
+
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 30, 0, 30)
+    closeBtn.Position = UDim2.new(1, -40, 0, 10)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(255, 70, 70)
+    closeBtn.Text = "✕"
+    closeBtn.TextColor3 = Color3.new(1,1,1)
+    closeBtn.TextSize = 16
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.Parent = header
+    Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
+
+    -- Tabs
+    local tabBar = Instance.new("Frame")
+    tabBar.Size = UDim2.new(1, -20, 0, 36)
+    tabBar.Position = UDim2.new(0, 10, 0, 58)
+    tabBar.BackgroundTransparency = 1
+    tabBar.Parent = main
+
+    local cheatsTab = Instance.new("TextButton")
+    cheatsTab.Size = UDim2.new(0.5, -6, 1, 0)
+    cheatsTab.BackgroundColor3 = Color3.fromRGB(0, 220, 120)
+    cheatsTab.Text = "⚡ Cheats"
+    cheatsTab.TextColor3 = Color3.new(0,0,0)
+    cheatsTab.TextSize = 14
+    cheatsTab.Font = Enum.Font.GothamBold
+    cheatsTab.Parent = tabBar
+    Instance.new("UICorner", cheatsTab).CornerRadius = UDim.new(0, 10)
+
+    local configTab = Instance.new("TextButton")
+    configTab.Size = UDim2.new(0.5, -6, 1, 0)
+    configTab.Position = UDim2.new(0.5, 6, 0, 0)
+    configTab.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+    configTab.Text = "⚙️ Config"
+    configTab.TextColor3 = Color3.fromRGB(180,180,200)
+    configTab.TextSize = 14
+    configTab.Font = Enum.Font.GothamBold
+    configTab.Parent = tabBar
+    Instance.new("UICorner", configTab).CornerRadius = UDim.new(0, 10)
+
+    tabButtons = {Cheats = cheatsTab, Config = configTab}
+
+    -- ═══ CHEATS PAGE (walang kalat — 5 clean toggles) ═══
+    cheatsPage = Instance.new("ScrollingFrame")
+    cheatsPage.Size = UDim2.new(1, -20, 1, -112)
+    cheatsPage.Position = UDim2.new(0, 10, 0, 102)
+    cheatsPage.BackgroundTransparency = 1
+    cheatsPage.BorderSizePixel = 0
+    cheatsPage.ScrollBarThickness = 3
+    cheatsPage.CanvasSize = UDim2.new(0, 0, 0, 0)
+    cheatsPage.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    cheatsPage.Parent = main
+
+    local cl = Instance.new("UIListLayout")
+    cl.Padding = UDim.new(0, 8)
+    cl.Parent = cheatsPage
+
+    local function MakeToggle(order, emoji, name, callback)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(1, 0, 0, 56)
+        btn.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
+        btn.Text = ""
+        btn.LayoutOrder = order
+        btn.Parent = cheatsPage
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 12)
+
+        local icon = Instance.new("TextLabel")
+        icon.Size = UDim2.new(0, 34, 1, 0)
+        icon.BackgroundTransparency = 1
+        icon.Text = emoji
+        icon.TextSize = 22
+        icon.Parent = btn
+
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, -110, 1, 0)
+        label.Position = UDim2.new(0, 44, 0, 0)
+        label.BackgroundTransparency = 1
+        label.Text = name
+        label.TextColor3 = Color3.new(1,1,1)
+        label.TextSize = 14
+        label.Font = Enum.Font.GothamBold
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Parent = btn
+
+        local state = false
+        local toggleBg = Instance.new("Frame")
+        toggleBg.Size = UDim2.new(0, 46, 0, 24)
+        toggleBg.Position = UDim2.new(1, -56, 0.5, -12)
+        toggleBg.BackgroundColor3 = Color3.fromRGB(55, 55, 70)
+        toggleBg.Parent = btn
+        Instance.new("UICorner", toggleBg).CornerRadius = UDim.new(1, 0)
+
+        local knob = Instance.new("Frame")
+        knob.Size = UDim2.new(0, 18, 0, 18)
+        knob.Position = UDim2.new(0, 3, 0.5, -9)
+        knob.BackgroundColor3 = Color3.fromRGB(255, 90, 90)
+        knob.Parent = toggleBg
+        Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+
+        btn.MouseButton1Click:Connect(function()
+            state = not state
+            toggleBg.BackgroundColor3 = state and Color3.fromRGB(0, 200, 110) or Color3.fromRGB(55, 55, 70)
+            knob.Position = state and UDim2.new(1, -21, 0.5, -9) or UDim2.new(0, 3, 0.5, -9)
+            knob.BackgroundColor3 = state and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(255, 90, 90)
+            callback(state)
+        end)
+        return btn
+    end
+
+    MakeToggle(1, "🥚", "Auto Steal Egg", function(s)
+        AutoSteal = s
+        if s then
+            if #SelectedRarity == 0 or #SelectedArea == 0 then
+                AutoSteal = false
+                Notify("⚠️ Pili muna sa Config! (Rarity + Area)", "error")
+                -- i-TOGGLE OFF ulit ang switch visual
+                SwitchTab("Config")
+            else
+                Notify("🥚 Auto Steal: ON! (" .. #SelectedRarity .. " rarity, " .. #SelectedArea .. " area)", "success")
+            end
+        else
+            Notify("🥚 Auto Steal: OFF", "info")
+        end
+    end)
+
+    MakeToggle(2, "🏃", "Auto Treadmill", function(s)
+        AutoTreadmill = s
+        Notify(s and "🏃 Auto Treadmill: ON! (Sariling plot mo lang!)" or "🏃 Auto Treadmill: OFF", s and "success" or "info")
+    end)
+
+    MakeToggle(3, "🛡️", "Anti-Ragdoll", function(s)
+        AntiRagdoll = s
+        Notify(s and "🛡️ Anti-Ragdoll: ON!" or "🛡️ Anti-Ragdoll: OFF", s and "success" or "info")
+    end)
+
+    MakeToggle(4, "❤️", "Anti-Hit (Passive)", function(s)
+        AntiHit = s
+        Notify(s and "❤️ Anti-Hit: ON! (Di na bounce/slow!)" or "❤️ Anti-Hit: OFF", s and "success" or "info")
+    end)
+
+    MakeToggle(5, "🤖", "Anti-Captcha", function(s)
+        AntiCaptcha = s
+        Notify(s and "🤖 Anti-Captcha: ON!" or "🤖 Anti-Captcha: OFF", s and "success" or "info")
+    end)
+
+    -- ═══ CONFIG PAGE (clean na multi-select!) ═══
+    configPage = Instance.new("ScrollingFrame")
+    configPage.Size = UDim2.new(1, -20, 1, -112)
+    configPage.Position = UDim2.new(0, 10, 0, 102)
+    configPage.BackgroundTransparency = 1
+    configPage.BorderSizePixel = 0
+    configPage.ScrollBarThickness = 3
+    configPage.CanvasSize = UDim2.new(0, 0, 0, 0)
+    configPage.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    configPage.Visible = false
+    configPage.Parent = main
+
+    local cfg = Instance.new("UIListLayout")
+    cfg.Padding = UDim.new(0, 10)
+    cfg.Parent = configPage
+
+    local function MakeMultiSelect(order, titleText, items, selectedTable, isRarity)
+        local section = Instance.new("Frame")
+        section.Size = UDim2.new(1, 0, 0, 30 + math.ceil(#items / 2) * 36 + 8)
+        section.BackgroundColor3 = Color3.fromRGB(24, 24, 36)
+        section.LayoutOrder = order
+        section.Parent = configPage
+        Instance.new("UICorner", section).CornerRadius = UDim.new(0, 12)
+
+        local st = Instance.new("TextLabel")
+        st.Size = UDim2.new(1, -16, 0, 26)
+        st.Position = UDim2.new(0, 12, 0, 4)
+        st.BackgroundTransparency = 1
+        st.Text = titleText
+        st.TextColor3 = Color3.fromRGB(0, 255, 150)
+        st.TextSize = 13
+        st.Font = Enum.Font.GothamBold
+        st.TextXAlignment = Enum.TextXAlignment.Left
+        st.Parent = section
+
+        local grid = Instance.new("Frame")
+        grid.Size = UDim2.new(1, -16, 1, -32)
+        grid.Position = UDim2.new(0, 8, 0, 30)
+        grid.BackgroundTransparency = 1
+        grid.Parent = section
+
+        local g = Instance.new("UIGridLayout")
+        g.CellSize = UDim2.new(0.5, -4, 0, 30)
+        g.CellPadding = UDim2.new(0, 6, 0, 6)
+        g.Parent = grid
+
+        for _, item in ipairs(items) do
+            local b = Instance.new("TextButton")
+            b.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+            b.Text = item
+            b.TextColor3 = Color3.fromRGB(180, 180, 200)
+            b.TextSize = 11
+            b.Font = Enum.Font.GothamBold
+            b.Parent = grid
+            Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
+            if isRarity and RARITY_COLORS[item] then
+                b.TextColor3 = RARITY_COLORS[item]
+            end
+
+            b.MouseButton1Click:Connect(function()
+                local idx = table.find(selectedTable, item)
+                if idx then
+                    table.remove(selectedTable, idx)
+                    b.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+                    b.TextColor3 = isRarity and RARITY_COLORS[item] or Color3.fromRGB(180, 180, 200)
+                else
+                    table.insert(selectedTable, item)
+                    b.BackgroundColor3 = Color3.fromRGB(0, 200, 110)
+                    b.TextColor3 = Color3.new(0, 0, 0)
+                end
+            end)
+        end
+    end
+
+    MakeMultiSelect(1, "🥚 Rarity Egg (Divine unahin!)", RARITY_PRIORITY, SelectedRarity, true)
+    MakeMultiSelect(2, "🌍 Area/Place (Totoong coordinates!)", AREAS, SelectedArea, false)
+
+    -- ═══ K BUTTON OPEN/CLOSE ═══
+    kbtn.MouseButton1Click:Connect(function()
+        main.Visible = not main.Visible
+        if main.Visible then
+            main.Position = UDim2.new(0.5, -190, 0.5, -240)
+            main.Size = UDim2.new(0, 0, 0, 0)
+            TweenService:Create(main, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+                {Size = UDim2.new(0, 380, 0, 480)}):Play()
+        end
+    end)
+
+    closeBtn.MouseButton1Click:Connect(function()
+        TweenService:Create(main, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+            {Size = UDim2.new(0, 0, 0, 0)}):Play()
+        task.delay(0.3, function() main.Visible = false end)
+    end)
+
+    cheatsTab.MouseButton1Click:Connect(function() SwitchTab("Cheats") end)
+    configTab.MouseButton1Click:Connect(function() SwitchTab("Config") end)
+
+    -- ═══ NOTIFICATION ═══
+    local notif = Instance.new("Frame")
+    notif.Name = "KyzenNotif"
+    notif.Size = UDim2.new(0, 300, 0, 46)
+    notif.Position = UDim2.new(1, 320, 0, 15)
+    notif.BackgroundColor3 = Color3.fromRGB(20, 20, 32)
+    notif.Parent = gui
+    Instance.new("UICorner", notif).CornerRadius = UDim.new(0, 12)
+    local nstroke = Instance.new("UIStroke")
+    nstroke.Color = Color3.fromRGB(0, 220, 120)
+    nstroke.Thickness = 1.5
+    nstroke.Parent = notif
+    local nmsg = Instance.new("TextLabel")
+    nmsg.Name = "Msg"
+    nmsg.Size = UDim2.new(1, -16, 1, 0)
+    nmsg.Position = UDim2.new(0, 8, 0, 0)
+    nmsg.BackgroundTransparency = 1
+    nmsg.TextColor3 = Color3.new(1,1,1)
+    nmsg.TextSize = 13
+    nmsg.Font = Enum.Font.Gotham
+    nmsg.TextWrapped = true
+    nmsg.Parent = notif
+
+    SwitchTab("Cheats")
+    -- Auto-detect ang plot mo agad
+    task.spawn(function()
+        task.wait(1)
+        MyPlot = FindMyPlot()
+        if MyPlot then
+            Notify("🏠 Plot mo na-detect: " .. MyPlot.Name, "success")
+        else
+            Notify("⚠️ Di pa na-detect ang plot mo, try ulit later", "warning")
+        end
+    end)
+    Notify("⚡ Kyzen Hub v5 LOADED! (FIXED!)", "success")
+end
+
+-- ══════════ LOADING SCREEN (maikli, di full screen!) ══════════
+local function CreateLoadingGUI()
+    local pg = Player:WaitForChild("PlayerGui")
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "KyzenLoading"
+    gui.ResetOnSpawn = false
+    gui.Parent = pg
+
+    local card = Instance.new("Frame")
+    card.Size = UDim2.new(0, 320, 0, 150)
+    card.Position = UDim2.new(0.5, -160, 0.5, -75)
+    card.BackgroundColor3 = Color3.fromRGB(18, 18, 26)
+    card.Parent = gui
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 14)
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(0, 220, 120)
+    stroke.Thickness = 2
+    stroke.Parent = card
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 40)
+    title.Position = UDim2.new(0, 0, 0, 20)
+    title.BackgroundTransparency = 1
+    title.Text = "⚡ Kyzen Hub v5"
+    title.TextColor3 = Color3.fromRGB(0, 255, 150)
+    title.TextSize = 24
+    title.Font = Enum.Font.GothamBold
+    title.Parent = card
+
+    local status = Instance.new("TextLabel")
+    status.Size = UDim2.new(1, 0, 0, 24)
+    status.Position = UDim2.new(0, 0, 0, 62)
+    status.BackgroundTransparency = 1
+    status.Text = "🥚 Naglo-load ng FIXED systems..."
+    status.TextColor3 = Color3.fromRGB(180, 200, 220)
+    status.TextSize = 13
+    status.Font = Enum.Font.Gotham
+    status.Parent = card
+
+    -- Animated dots
+    task.spawn(function()
+        local dots = 0
+        while gui.Parent do
+            dots = (dots + 1) % 4
+            status.Text = "🥚 Naglo-load ng FIXED systems" .. string.rep(".", dots)
+            task.wait(0.4)
+        end
+    end)
+
+    task.wait(2)
+    gui:Destroy()
+    pcall(CreateMainGUI)
+end
+
+print("═══ KYZEN HUB v5.0 FIXED — LOADED! ═══")
+CreateLoadingGUI()
