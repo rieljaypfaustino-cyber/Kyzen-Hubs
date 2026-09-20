@@ -1,70 +1,44 @@
 --[[
-    KYZEN HUB v5.1 — BULLETPROOF FULL EDITION
-    ✓ May error catcher sa screen (hindi na tahimik!)
-    ✓ Error auto-copied sa clipboard
-    ✓ Lahat naka-pcall
+    KYZEN HUB v5.2 — GUI-VISIBLE FIX EDITION
+    ✓ 3 fallback parents (gethui/CoreGui/PlayerGui)
+    ✓ DisplayOrder 99999 (siguradong nasa ibabaw)
+    ✓ Stage-by-stage debug prints sa console
 ]]
 
--- ═══ ERROR CATCHER (magpapakita sa screen kung may mali) ═══
-local function ShowFatalError(err)
-    pcall(function()
-        local pg = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui", 5)
-        if not pg then return end
-        local g = Instance.new("ScreenGui")
-        g.Name = "KyzenError"
-        g.ResetOnSpawn = false
-        g.Parent = pg
-        local f = Instance.new("Frame")
-        f.Size = UDim2.new(0, 340, 0, 200)
-        f.Position = UDim2.new(0.5, -170, 0.5, -100)
-        f.BackgroundColor3 = Color3.fromRGB(40, 10, 10)
-        f.Parent = g
-        Instance.new("UICorner", f).CornerRadius = UDim.new(0, 12)
-        local t = Instance.new("TextLabel")
-        t.Size = UDim2.new(1, -16, 0, 30)
-        t.Position = UDim2.new(0, 8, 0, 6)
-        t.BackgroundTransparency = 1
-        t.Text = "❌ KYZEN HUB ERROR"
-        t.TextColor3 = Color3.fromRGB(255, 80, 80)
-        t.TextSize = 18
-        t.Font = Enum.Font.GothamBold
-        t.Parent = f
-        local e = Instance.new("TextLabel")
-        e.Size = UDim2.new(1, -16, 1, -80)
-        e.Position = UDim2.new(0, 8, 0, 40)
-        e.BackgroundTransparency = 1
-        e.Text = tostring(err)
-        e.TextColor3 = Color3.new(1, 1, 1)
-        e.TextSize = 11
-        e.Font = Enum.Font.Code
-        e.TextWrapped = true
-        e.TextXAlignment = Enum.TextXAlignment.Left
-        e.TextYAlignment = Enum.TextYAlignment.Top
-        e.Parent = f
-        local hint = Instance.new("TextLabel")
-        hint.Size = UDim2.new(1, -16, 0, 30)
-        hint.Position = UDim2.new(0, 8, 1, -34)
-        hint.BackgroundTransparency = 1
-        hint.Text = "📋 Error auto-copied! I-send kay HAI"
-        hint.TextColor3 = Color3.fromRGB(255, 220, 100)
-        hint.TextSize = 11
-        hint.Font = Enum.Font.Gotham
-        hint.Parent = f
-        if setclipboard then pcall(setclipboard, tostring(err)) end
-        if toclipboard then pcall(toclipboard, tostring(err)) end
-    end)
-end
+print("[KYZEN 1/8] Script started...")
 
-local OK, MAINERR = pcall(function()
-
--- ══════════ SERVICES ══════════
+-- ═══ STAGE 1: SERVICES ═══
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local Player = Players.LocalPlayer
 local RS = game:GetService("ReplicatedStorage")
 
--- ══════════ CONSTANTS (mula sa totoong game dump) ══════════
+print("[KYZEN 2/8] Services OK, player: " .. Player.Name)
+
+-- ═══ STAGE 2: SAFE GUI PARENT FINDER (ITO ANG FIX!) ═══
+local function GetGuiParent()
+    -- Priority: gethui() (pinaka-safe sa executors) → CoreGui → PlayerGui
+    local ok, hui = pcall(function() return gethui and gethui() end)
+    if ok and hui then return hui end
+    local ok2, core = pcall(function() return game:GetService("CoreGui") end)
+    if ok2 and core then
+        -- test kung pwede mag-parent sa CoreGui
+        local test = Instance.new("Frame")
+        local ok3 = pcall(function() test.Parent = core end)
+        if ok3 and test.Parent == core then
+            test:Destroy()
+            return core
+        end
+        test:Destroy()
+    end
+    return Player:WaitForChild("PlayerGui")
+end
+
+local GUIParent = GetGuiParent()
+print("[KYZEN 3/8] GUI parent: " .. GUIParent.Name)
+
+-- ═══ CONSTANTS ═══
 local SAFEZONE = Vector3.new(456, 70, -364)
 local RARITY_PRIORITY = {"Divine","Eternal","Secret","Cosmic","Mythic","Legendary","Epic","Rare","Uncommon","Common"}
 local AREAS = {"Forest","Lake","Desert","Jungle","Snow","Volcano","Abyss Ocean","Prehistoric","Cosmic","Cherry Blossom","Titan Temple","Light & Dark"}
@@ -75,56 +49,52 @@ local RARITY_COLORS = {
     Divine=Color3.fromRGB(255,215,0)
 }
 
--- ══════════ STATE ══════════
+-- ═══ STATE ═══
 local SelectedRarity, SelectedArea = {}, {}
 local AutoSteal, AutoTreadmill = false, false
 local AntiRagdoll, AntiHit, AntiCaptcha = false, false, false
 local Stealing = false
 local MyPlot = nil
-local NotifyGUI = nil
+local NotifyFrame = nil
 
--- ══════════ REMOTES ══════════
+-- ═══ REMOTES ═══
 local function GetRemote(name)
-    local ok, result = pcall(function()
+    local ok, r = pcall(function()
         local pkgs = RS:FindFirstChild("Packages")
-        if not pkgs then return nil end
-        local net = pkgs:FindFirstChild("Networking")
+        local net = pkgs and pkgs:FindFirstChild("Networking")
         if not net then return nil end
         for _, v in ipairs(net:GetDescendants()) do
             if v.Name == name then return v end
         end
-        return nil
     end)
-    return ok and result or nil
+    return ok and r or nil
 end
-
 local RF_Carry = GetRemote("AskFieldEggCarry")
 local RF_Drop = GetRemote("AskFieldEggDrop")
 local RF_TierRaise = GetRemote("AskTierRaise")
 
--- ══════════ UTILITIES ══════════
+print("[KYZEN 4/8] Remotes: Carry=" .. tostring(RF_Carry ~= nil) .. " Drop=" .. tostring(RF_Drop ~= nil))
+
+-- ═══ UTILITIES ═══
 local function Notify(msg, msgType)
     pcall(function()
-        local notif = NotifyGUI and NotifyGUI:FindFirstChild("KyzenNotif")
-        if not notif then print("[KYZEN] " .. msg) return end
+        if not NotifyFrame then print("[KYZEN NOTIF] " .. msg) return end
         local colors = {
-            success = Color3.fromRGB(0,255,120),
-            error = Color3.fromRGB(255,90,90),
-            warning = Color3.fromRGB(255,200,80),
-            info = Color3.fromRGB(120,200,255)
+            success=Color3.fromRGB(0,255,120), error=Color3.fromRGB(255,90,90),
+            warning=Color3.fromRGB(255,200,80), info=Color3.fromRGB(120,200,255)
         }
-        local label = notif:FindFirstChild("Msg")
+        local label = NotifyFrame:FindFirstChild("Msg")
         if label then
             label.Text = msg
             label.TextColor3 = colors[msgType] or Color3.new(1,1,1)
         end
-        notif.Visible = true
-        notif.Position = UDim2.new(1, 20, 0, 15)
-        TweenService:Create(notif, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+        NotifyFrame.Visible = true
+        NotifyFrame.Position = UDim2.new(1, 20, 0, 15)
+        TweenService:Create(NotifyFrame, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
             {Position = UDim2.new(1, -320, 0, 15)}):Play()
         task.delay(2.5, function()
-            if notif.Parent then
-                TweenService:Create(notif, TweenInfo.new(0.3), {Position = UDim2.new(1, 320, 0, 15)}):Play()
+            if NotifyFrame.Parent then
+                TweenService:Create(NotifyFrame, TweenInfo.new(0.3), {Position = UDim2.new(1, 320, 0, 15)}):Play()
             end
         end)
     end)
@@ -134,9 +104,7 @@ local function MakeDraggable(handle, target)
     local dragging, dragStart, startPos = false, nil, nil
     handle.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = target.Position
+            dragging, dragStart, startPos = true, input.Position, target.Position
         end
     end)
     handle.InputEnded:Connect(function(input)
@@ -154,33 +122,25 @@ local function MakeDraggable(handle, target)
 end
 
 local function GetHRP()
-    local char = Player.Character
-    if not char then return nil end
-    return char:FindFirstChild("HumanoidRootPart")
+    local c = Player.Character
+    return c and c:FindFirstChild("HumanoidRootPart") or nil
 end
-
 local function GetHumanoid()
-    local char = Player.Character
-    if not char then return nil end
-    return char:FindFirstChild("Humanoid")
+    local c = Player.Character
+    return c and c:FindFirstChild("Humanoid") or nil
 end
-
 local function TP(cf)
     local hrp = GetHRP()
-    if hrp then
-        hrp.CFrame = cf
-        return true
-    end
+    if hrp then hrp.CFrame = cf return true end
     return false
 end
 
--- ══════════ PLOT DETECTION (SARILING PLOT!) ══════════
+-- ═══ PLOT DETECTION ═══
 local function FindMyPlot()
     local ok, result = pcall(function()
         local plots = workspace:FindFirstChild("Plots")
         if not plots then return nil end
         local lname = string.lower(Player.Name)
-        -- Check 1: owner attribute
         for _, plot in ipairs(plots:GetChildren()) do
             local owner = plot:GetAttribute("Owner") or plot:GetAttribute("OwnerName") or plot:GetAttribute("Player")
             local ownerId = plot:GetAttribute("OwnerId") or plot:GetAttribute("OwnerUserId")
@@ -188,7 +148,6 @@ local function FindMyPlot()
                 return plot
             end
         end
-        -- Check 2: player name sa sign/billboard sa loob ng plot
         for _, plot in ipairs(plots:GetChildren()) do
             for _, d in ipairs(plot:GetDescendants()) do
                 if (d:IsA("TextLabel") or d:IsA("TextButton")) and string.find(string.lower(d.Text), lname, 1, true) then
@@ -196,7 +155,6 @@ local function FindMyPlot()
                 end
             end
         end
-        -- Check 3: nearest SpawnPoint sa kinatatayuan ko
         local hrp = GetHRP()
         if hrp then
             local best, bestDist = nil, math.huge
@@ -214,46 +172,36 @@ local function FindMyPlot()
     return ok and result or nil
 end
 
--- ══════════ EGG DETECTION ══════════
+-- ═══ EGG DETECTION ═══
 local function GetEggRarity(egg)
-    local ok, result = pcall(function()
+    local ok, r = pcall(function()
         for _, attr in ipairs({"Rarity","EggRarity","Tier","EggTier","Quality"}) do
             local v = egg:GetAttribute(attr)
             if v then return tostring(v) end
         end
-        for _, d in ipairs(egg:GetDescendants()) do
-            if d.GetAttribute then
-                for _, attr in ipairs({"Rarity","EggRarity","Tier"}) do
-                    local v = d:GetAttribute(attr)
-                    if v then return tostring(v) end
-                end
-            end
-        end
-        -- name-based fallback
         local n = string.lower(egg.Name)
-        for _, r in ipairs(RARITY_PRIORITY) do
-            if string.find(n, string.lower(r), 1, true) then return r end
+        for _, rr in ipairs(RARITY_PRIORITY) do
+            if string.find(n, string.lower(rr), 1, true) then return rr end
         end
         return nil
     end)
-    return ok and result or nil
+    return ok and r or nil
 end
 
 local function GetEggArea(pos)
-    local ok, result = pcall(function()
+    local ok, r = pcall(function()
         local ranges = {
-            {"Forest", 550, 700}, {"Lake", 700, 770}, {"Desert", 770, 880},
-            {"Jungle", 880, 1000}, {"Snow", 1000, 1140}, {"Volcano", 1140, 1300},
-            {"Abyss Ocean", 1300, 1480}, {"Prehistoric", 1480, 1680},
-            {"Cosmic", 1680, 2000}, {"Cherry Blossom", 2000, 4400},
-            {"Titan Temple", 4400, 5200}, {"Light & Dark", 5200, 99999}
+            {"Forest",550,700},{"Lake",700,770},{"Desert",770,880},{"Jungle",880,1000},
+            {"Snow",1000,1140},{"Volcano",1140,1300},{"Abyss Ocean",1300,1480},
+            {"Prehistoric",1480,1680},{"Cosmic",1680,2000},{"Cherry Blossom",2000,4400},
+            {"Titan Temple",4400,5200},{"Light & Dark",5200,99999}
         }
-        for _, r in ipairs(ranges) do
-            if pos.X >= r[2] and pos.X < r[3] then return r[1] end
+        for _, rr in ipairs(ranges) do
+            if pos.X >= rr[2] and pos.X < rr[3] then return rr[1] end
         end
         return nil
     end)
-    return ok and result or nil
+    return ok and r or nil
 end
 
 local function RarityRank(r)
@@ -263,55 +211,43 @@ local function RarityRank(r)
     return 999
 end
 
-local function GetEggPos(egg)
-    local ok, result = pcall(function()
-        if egg:IsA("BasePart") then return egg.Position end
-        if egg:IsA("Model") then return egg:GetPivot().Position end
-        if egg:IsA("Attachment") then return egg.WorldPosition end
+local function GetEggPos(e)
+    local ok, r = pcall(function()
+        if e:IsA("BasePart") then return e.Position end
+        if e:IsA("Model") then return e:GetPivot().Position end
+        if e:IsA("Attachment") then return e.WorldPosition end
         return nil
     end)
-    return ok and result or nil
+    return ok and r or nil
 end
 
 local function FindTargetEgg()
-    local ok, best = pcall(function()
+    local ok, egg, prompt = pcall(function()
         local candidates = {}
-        -- Source 1: Workspace.Eggs
         local eggsFolder = workspace:FindFirstChild("Eggs")
         if eggsFolder then
-            for _, egg in ipairs(eggsFolder:GetDescendants()) do
-                if egg:IsA("BasePart") or egg:IsA("Model") then
-                    table.insert(candidates, egg)
-                end
+            for _, e in ipairs(eggsFolder:GetDescendants()) do
+                if e:IsA("BasePart") or e:IsA("Model") then table.insert(candidates, e) end
             end
         end
-        -- Source 2: AreaEggSlotsClient
         local slots = workspace:FindFirstChild("AreaEggSlotsClient")
         if slots then
-            for _, egg in ipairs(slots:GetDescendants()) do
-                if egg:IsA("BasePart") or egg:IsA("Model") then
-                    table.insert(candidates, egg)
-                end
+            for _, e in ipairs(slots:GetDescendants()) do
+                if e:IsA("BasePart") or e:IsA("Model") then table.insert(candidates, e) end
             end
         end
-        -- Source 3: Steal prompts sa buong workspace (CarryAreaEgg style!)
-        for _, prompt in ipairs(workspace:GetDescendants()) do
-            if prompt:IsA("ProximityPrompt") and string.find(string.lower(prompt.ActionText or ""), "steal") then
-                local holder = prompt.Parent
-                if holder then
-                    table.insert(candidates, holder)
-                end
+        for _, pp in ipairs(workspace:GetDescendants()) do
+            if pp:IsA("ProximityPrompt") and string.find(string.lower(pp.ActionText or ""), "steal") then
+                if pp.Parent then table.insert(candidates, pp.Parent) end
             end
         end
-
-        -- Filter: rarity + area match, pinakamataas na rarity ang panalo
         local bestEgg, bestRank, bestPrompt = nil, 999, nil
-        for _, egg in ipairs(candidates) do
-            local pos = GetEggPos(egg)
+        for _, e in ipairs(candidates) do
+            local pos = GetEggPos(e)
             if pos then
-                local rarity = GetEggRarity(egg)
+                local rarity = GetEggRarity(e)
                 local area = GetEggArea(pos)
-                local rarityOK = (#SelectedRarity == 0) -- kung walang select, any
+                local rarityOK = (#SelectedRarity == 0)
                 if not rarityOK and rarity then
                     for _, r in ipairs(SelectedRarity) do
                         if string.lower(r) == string.lower(rarity) then rarityOK = true break end
@@ -326,75 +262,59 @@ local function FindTargetEgg()
                 if rarityOK and areaOK then
                     local rank = RarityRank(rarity)
                     if rank < bestRank then
-                        bestEgg, bestRank = egg, rank
-                        -- hanapin ang steal prompt nito
-                        bestPrompt = egg:FindFirstChildWhichIsA("ProximityPrompt", true)
+                        bestEgg, bestRank = e, rank
+                        bestPrompt = e:FindFirstChildWhichIsA("ProximityPrompt", true)
                     end
                 end
             end
         end
         return bestEgg, bestPrompt
     end)
-    if ok then return best end
+    if ok then return egg, prompt end
     return nil, nil
 end
 
--- ══════════ CARRY CHECK (may hawak na egg ba?) ══════════
 local function IsCarryingEgg()
-    local ok, result = pcall(function()
+    local ok, r = pcall(function()
         local char = Player.Character
         if not char then return false end
         if char:GetAttribute("Carrying") or char:GetAttribute("CarryingEgg") then return true end
         for _, d in ipairs(char:GetChildren()) do
-            local n = string.lower(d.Name)
-            if string.find(n, "egg", 1, true) and not d:IsA("Shirt") and not d:IsA("Pants") then
-                return true
-            end
+            if string.find(string.lower(d.Name), "egg", 1, true) then return true end
         end
         return false
     end)
-    return ok and result or false
+    return ok and r or false
 end
 
--- ══════════ STEAL SYSTEM (HELD-IN-HAND FLOW!) ══════════
+-- ═══ STEAL SYSTEM ═══
 local function StealEgg(egg, prompt)
     Stealing = true
     pcall(function()
         local pos = GetEggPos(egg)
         if not pos then Stealing = false return end
-
-        -- 1. Teleport sa tabi ng egg
         TP(CFrame.new(pos + Vector3.new(0, 4, 4)))
         task.wait(0.35)
-
-        -- 2. TRY REMOTE MUNA (AskFieldEggCarry)
         local carried = false
         if RF_Carry then
             local eggId = egg:GetAttribute("Id") or egg:GetAttribute("EggId") or egg.Name
-            local okRemote = pcall(function()
-                RF_Carry:InvokeServer(eggId)
-            end)
-            if okRemote then
-                task.wait(0.5)
-                carried = IsCarryingEgg()
-            end
+            pcall(function() RF_Carry:InvokeServer(eggId) end)
+            task.wait(0.5)
+            carried = IsCarryingEgg()
         end
-
-        -- 3. FALLBACK: PROMPT STEAL (0s hold — BYPASS ng countdown!)
         if not carried then
             local p = prompt or egg:FindFirstChildWhichIsA("ProximityPrompt", true)
             if not p then
-                -- hanapin ang malapit na steal prompt
                 for _, pp in ipairs(workspace:GetDescendants()) do
                     if pp:IsA("ProximityPrompt") and string.find(string.lower(pp.ActionText or ""), "steal") then
-                        local parentPos = pp.Parent and GetEggPos(pp.Parent)
-                        if parentPos and (parentPos - pos).Magnitude < 20 then p = pp break end
+                        local ppPos = pp.Parent and GetEggPos(pp.Parent)
+                        if ppPos and (ppPos - pos).Magnitude < 20 then p = pp break end
                     end
                 end
             end
             if p then
                 pcall(function()
-                    p.HoldDuration = 0 -- BYPASS ng 1.2s countdown!
+                    p.HoldDuration = 0
                     p.RequiresLineOfSight = false
                     p.MaxActivationDistance = math.huge
                 end)
@@ -412,44 +332,29 @@ local function StealEgg(egg, prompt)
                 carried = IsCarryingEgg()
             end
         end
-
         if not carried then
             Notify("❌ Di na-steal, try ulit!", "error")
             Stealing = false
             return
         end
-
-        Notify("🥚 Egg nakuha! Held sa kamay mo — papunta sa plot mo!", "success")
-
-        -- 4. DALHIN SA SARILING PLOT (held pa rin sa kamay!)
+        Notify("🥚 Egg nakuha! Papunta sa plot mo!", "success")
         if not MyPlot then MyPlot = FindMyPlot() end
         if MyPlot then
             local sp = MyPlot:FindFirstChild("SpawnPoint", true)
             local dropPos = sp and sp.Position or MyPlot:GetPivot().Position
             TP(CFrame.new(dropPos + Vector3.new(0, 5, 0)))
             task.wait(0.8)
-
-            -- 5. I-DROP ANG EGG SA PLOT
-            local dropped = false
-            if RF_Drop then
-                pcall(function() RF_Drop:InvokeServer() end)
-                task.wait(0.4)
-                dropped = not IsCarryingEgg()
-            end
-            if not dropped then task.wait(1) end
+            if RF_Drop then pcall(function() RF_Drop:InvokeServer() end) end
+            task.wait(0.4)
             Notify("📦 Egg na-drop sa plot mo!", "success")
-        else
-            Notify("⚠️ Plot mo di ma-detect, dala mo pa ang egg!", "warning")
         end
-
-        -- 6. BALIK SA SAFEZONE
         TP(CFrame.new(SAFEZONE))
-        Notify("🏠 Balik na sa Safezone!", "info")
+        Notify("🏠 Balik sa Safezone!", "info")
     end)
     Stealing = false
 end
 
--- ══════════ AUTO STEAL LOOP ══════════
+-- ═══ LOOPS ═══
 task.spawn(function()
     while task.wait(0.5) do
         pcall(function()
@@ -458,7 +363,6 @@ task.spawn(function()
                     Notify("⚠️ Pili muna ng Rarity + Area sa Config!", "error")
                     AutoSteal = false
                 elseif IsCarryingEgg() then
-                    -- may dala na — dalhin sa plot
                     if not MyPlot then MyPlot = FindMyPlot() end
                     if MyPlot then
                         local sp = MyPlot:FindFirstChild("SpawnPoint", true)
@@ -472,7 +376,7 @@ task.spawn(function()
                 else
                     local egg, prompt = FindTargetEgg()
                     if egg then
-                        Notify("🎯 May target egg! Papunta na...", "info")
+                        Notify("🎯 May target egg!", "info")
                         StealEgg(egg, prompt)
                     end
                 end
@@ -481,21 +385,18 @@ task.spawn(function()
     end
 end)
 
--- ══════════ AUTO TREADMILL (SARILING PLOT LANG!) ══════════
 task.spawn(function()
     while task.wait(1) do
         pcall(function()
             if AutoTreadmill and not Stealing then
                 if not MyPlot then MyPlot = FindMyPlot() end
-                if not MyPlot then return end
-                local treadmill = MyPlot:FindFirstChild("TreadmillBottom", true)
-                if treadmill then
-                    local tPos = GetEggPos(treadmill)
-                    if tPos then
+                if MyPlot then
+                    local tm = MyPlot:FindFirstChild("TreadmillBottom", true)
+                    if tm then
+                        local tPos = GetEggPos(tm)
                         local hrp = GetHRP()
-                        if hrp and (hrp.Position - tPos).Magnitude > 10 then
+                        if tPos and hrp and (hrp.Position - tPos).Magnitude > 10 then
                             TP(CFrame.new(tPos + Vector3.new(0, 4, 0)))
-                            task.wait(0.3)
                         end
                     end
                 end
@@ -505,15 +406,14 @@ task.spawn(function()
     end
 end)
 
--- ══════════ ANTI-RAGDOLL (SAFE MODE) ══════════
 task.spawn(function()
     while task.wait(0.3) do
         pcall(function()
             if AntiRagdoll then
                 local hum = GetHumanoid()
                 if hum and hum.Health > 0 then
-                    local state = hum:GetState()
-                    if state == Enum.HumanoidStateType.Physics or state == Enum.HumanoidStateType.Ragdoll then
+                    local st = hum:GetState()
+                    if st == Enum.HumanoidStateType.Physics or st == Enum.HumanoidStateType.Ragdoll then
                         hum:ChangeState(Enum.HumanoidStateType.GettingUp)
                     end
                 end
@@ -522,40 +422,33 @@ task.spawn(function()
     end
 end)
 
--- ══════════ ANTI-HIT (PASSIVE — walang physics interference!) ══════════
 task.spawn(function()
     while task.wait(0.5) do
         pcall(function()
             if AntiHit then
                 local hum = GetHumanoid()
                 if hum and hum.Health < hum.MaxHealth * 0.3 then
-                    Notify("⚠️ Mababa ang HP! Mag-ingat!", "warning")
+                    Notify("⚠️ Mababa ang HP!", "warning")
                 end
             end
         end)
     end
 end)
 
--- ══════════ ANTI-CAPTCHA ══════════
 task.spawn(function()
     while task.wait(1) do
         pcall(function()
-            if AntiCaptcha then
-                local pg = Player:FindFirstChild("PlayerGui")
-                if pg then
-                    for _, gui in ipairs(pg:GetChildren()) do
-                        local n = string.lower(gui.Name)
-                        if gui:IsA("ScreenGui") and (string.find(n, "captcha") or string.find(n, "verify")) then
-                            if gui.Enabled then
-                                for _, btn in ipairs(gui:GetDescendants()) do
-                                    if btn:IsA("TextButton") then
-                                        local bt = string.lower(btn.Text)
-                                        if string.find(bt, "confirm") or string.find(bt, "ok") or string.find(bt, "submit") then
-                                            if getconnections then
-                                                for _, conn in ipairs(getconnections(btn.MouseButton1Click) or {}) do
-                                                    pcall(function() conn:Fire() end)
-                                                end
-                                            end
+            if AntiCaptcha and Player:FindFirstChild("PlayerGui") then
+                for _, g in ipairs(Player.PlayerGui:GetChildren()) do
+                    local n = string.lower(g.Name)
+                    if g:IsA("ScreenGui") and (string.find(n, "captcha") or string.find(n, "verify")) and g.Enabled then
+                        for _, btn in ipairs(g:GetDescendants()) do
+                            if btn:IsA("TextButton") then
+                                local bt = string.lower(btn.Text)
+                                if string.find(bt, "confirm") or string.find(bt, "submit") then
+                                    if getconnections then
+                                        for _, conn in ipairs(getconnections(btn.MouseButton1Click) or {}) do
+                                            pcall(function() conn:Fire() end)
                                         end
                                     end
                                 end
@@ -568,7 +461,7 @@ task.spawn(function()
     end
 end)
 
--- ══════════ GUI ══════════
+-- ═══ MAIN GUI ═══
 local main, cheatsPage, configPage
 local tabButtons = {}
 
@@ -578,21 +471,27 @@ local function SwitchTab(name)
     configPage.Visible = (name == "Config")
     for tabName, btn in pairs(tabButtons) do
         local active = (tabName == name)
-        btn.BackgroundColor3 = active and Color3.fromRGB(0, 220, 120) or Color3.fromRGB(40, 40, 55)
+        btn.BackgroundColor3 = active and Color3.fromRGB(0,220,120) or Color3.fromRGB(40,40,55)
         btn.TextColor3 = active and Color3.new(0,0,0) or Color3.fromRGB(180,180,200)
     end
 end
 
 local function CreateMainGUI()
-    local pg = Player:WaitForChild("PlayerGui")
-    local old = pg:FindFirstChild("KyzenHub")
-    if old then old:Destroy() end
+    -- I-DESTROY ang lumang KyzenHub kahit saan naka-parent
+    for _, container in ipairs({GUIParent, Player:FindFirstChild("PlayerGui")}) do
+        if container then
+            local old = container:FindFirstChild("KyzenHub")
+            if old then old:Destroy() end
+        end
+    end
 
     local gui = Instance.new("ScreenGui")
     gui.Name = "KyzenHub"
     gui.ResetOnSpawn = false
-    gui.Parent = pg
-    NotifyGUI = gui
+    gui.DisplayOrder = 99999          -- ⬅️ SIGURADONG NASA IBABAW!
+    gui.IgnoreGuiInset = true
+    gui.Parent = GUIParent            -- ⬅️ gethui()/CoreGui fallback!
+    print("[KYZEN 5/8] ScreenGui created, parent: " .. gui.Parent.Name .. ", inGui: " .. tostring(gui:IsA("ScreenGui")))
 
     -- K BUTTON
     local kbtn = Instance.new("TextButton")
@@ -603,6 +502,7 @@ local function CreateMainGUI()
     kbtn.TextColor3 = Color3.new(0,0,0)
     kbtn.TextSize = 26
     kbtn.Font = Enum.Font.GothamBlack
+    kbtn.Visible = true
     kbtn.Parent = gui
     Instance.new("UICorner", kbtn).CornerRadius = UDim.new(1, 0)
     local kstroke = Instance.new("UIStroke")
@@ -612,7 +512,7 @@ local function CreateMainGUI()
     kstroke.Parent = kbtn
     MakeDraggable(kbtn, kbtn)
 
-    -- MAIN FRAME (ISANG GUI LANG!)
+    -- MAIN FRAME
     main = Instance.new("Frame")
     main.Size = UDim2.new(0, 380, 0, 480)
     main.Position = UDim2.new(0.5, -190, 0.5, -240)
@@ -622,7 +522,7 @@ local function CreateMainGUI()
     main.Parent = gui
     Instance.new("UICorner", main).CornerRadius = UDim.new(0, 16)
     local mstroke = Instance.new("UIStroke")
-    mstroke.Color = Color3.fromRGB(0, 220, 120)
+    mstroke.Color = Color3.fromRGB(0,220,120)
     mstroke.Thickness = 2
     mstroke.Transparency = 0.3
     mstroke.Parent = main
@@ -631,7 +531,7 @@ local function CreateMainGUI()
     -- HEADER
     local header = Instance.new("Frame")
     header.Size = UDim2.new(1, 0, 0, 50)
-    header.BackgroundColor3 = Color3.fromRGB(24, 24, 36)
+    header.BackgroundColor3 = Color3.fromRGB(24,24,36)
     header.Parent = main
     Instance.new("UICorner", header).CornerRadius = UDim.new(0, 16)
 
@@ -639,8 +539,8 @@ local function CreateMainGUI()
     title.Size = UDim2.new(1, -60, 0, 26)
     title.Position = UDim2.new(0, 16, 0, 5)
     title.BackgroundTransparency = 1
-    title.Text = "⚡ Kyzen Hub v5.1"
-    title.TextColor3 = Color3.fromRGB(0, 255, 150)
+    title.Text = "⚡ Kyzen Hub v5.2"
+    title.TextColor3 = Color3.fromRGB(0,255,150)
     title.TextSize = 20
     title.Font = Enum.Font.GothamBold
     title.TextXAlignment = Enum.TextXAlignment.Left
@@ -650,8 +550,8 @@ local function CreateMainGUI()
     subtitle.Size = UDim2.new(1, -60, 0, 16)
     subtitle.Position = UDim2.new(0, 16, 0, 30)
     subtitle.BackgroundTransparency = 1
-    subtitle.Text = "🥚 Steal an Egg (sae) — FULL"
-    subtitle.TextColor3 = Color3.fromRGB(130, 180, 160)
+    subtitle.Text = "🥚 Steal an Egg (sae) — VISIBLE FIX"
+    subtitle.TextColor3 = Color3.fromRGB(130,180,160)
     subtitle.TextSize = 11
     subtitle.Font = Enum.Font.Gotham
     subtitle.TextXAlignment = Enum.TextXAlignment.Left
@@ -660,7 +560,7 @@ local function CreateMainGUI()
     local closeBtn = Instance.new("TextButton")
     closeBtn.Size = UDim2.new(0, 30, 0, 30)
     closeBtn.Position = UDim2.new(1, -40, 0, 10)
-    closeBtn.BackgroundColor3 = Color3.fromRGB(255, 70, 70)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(255,70,70)
     closeBtn.Text = "✕"
     closeBtn.TextColor3 = Color3.new(1,1,1)
     closeBtn.TextSize = 16
@@ -677,7 +577,7 @@ local function CreateMainGUI()
 
     local cheatsTab = Instance.new("TextButton")
     cheatsTab.Size = UDim2.new(0.5, -6, 1, 0)
-    cheatsTab.BackgroundColor3 = Color3.fromRGB(0, 220, 120)
+    cheatsTab.BackgroundColor3 = Color3.fromRGB(0,220,120)
     cheatsTab.Text = "⚡ Cheats"
     cheatsTab.TextColor3 = Color3.new(0,0,0)
     cheatsTab.TextSize = 14
@@ -688,7 +588,7 @@ local function CreateMainGUI()
     local configTab = Instance.new("TextButton")
     configTab.Size = UDim2.new(0.5, -6, 1, 0)
     configTab.Position = UDim2.new(0.5, 6, 0, 0)
-    configTab.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+    configTab.BackgroundColor3 = Color3.fromRGB(40,40,55)
     configTab.Text = "⚙️ Config"
     configTab.TextColor3 = Color3.fromRGB(180,180,200)
     configTab.TextSize = 14
@@ -705,10 +605,9 @@ local function CreateMainGUI()
     cheatsPage.BackgroundTransparency = 1
     cheatsPage.BorderSizePixel = 0
     cheatsPage.ScrollBarThickness = 3
-    cheatsPage.CanvasSize = UDim2.new(0, 0, 0, 0)
+    cheatsPage.CanvasSize = UDim2.new(0,0,0,0)
     cheatsPage.AutomaticCanvasSize = Enum.AutomaticSize.Y
     cheatsPage.Parent = main
-
     local cl = Instance.new("UIListLayout")
     cl.Padding = UDim.new(0, 8)
     cl.Parent = cheatsPage
@@ -716,7 +615,7 @@ local function CreateMainGUI()
     local function MakeToggle(order, emoji, name, callback)
         local btn = Instance.new("TextButton")
         btn.Size = UDim2.new(1, 0, 0, 56)
-        btn.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
+        btn.BackgroundColor3 = Color3.fromRGB(30,30,42)
         btn.Text = ""
         btn.LayoutOrder = order
         btn.Parent = cheatsPage
@@ -743,23 +642,23 @@ local function CreateMainGUI()
         local toggleBg = Instance.new("Frame")
         toggleBg.Size = UDim2.new(0, 46, 0, 24)
         toggleBg.Position = UDim2.new(1, -56, 0.5, -12)
-        toggleBg.BackgroundColor3 = Color3.fromRGB(55, 55, 70)
+        toggleBg.BackgroundColor3 = Color3.fromRGB(55,55,70)
         toggleBg.Parent = btn
         Instance.new("UICorner", toggleBg).CornerRadius = UDim.new(1, 0)
 
         local knob = Instance.new("Frame")
         knob.Size = UDim2.new(0, 18, 0, 18)
         knob.Position = UDim2.new(0, 3, 0.5, -9)
-        knob.BackgroundColor3 = Color3.fromRGB(255, 90, 90)
+        knob.BackgroundColor3 = Color3.fromRGB(255,90,90)
         knob.Parent = toggleBg
         Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
 
         btn.MouseButton1Click:Connect(function()
-            local newState = (knob.Position.X.Offset < 10)
-            toggleBg.BackgroundColor3 = newState and Color3.fromRGB(0, 200, 110) or Color3.fromRGB(55, 55, 70)
-            knob.Position = newState and UDim2.new(1, -21, 0.5, -9) or UDim2.new(0, 3, 0.5, -9)
-            knob.BackgroundColor3 = newState and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(255, 90, 90)
-            callback(newState)
+            local s = (knob.Position.X.Offset < 10)
+            toggleBg.BackgroundColor3 = s and Color3.fromRGB(0,200,110) or Color3.fromRGB(55,55,70)
+            knob.Position = s and UDim2.new(1,-21,0.5,-9) or UDim2.new(0,3,0.5,-9)
+            knob.BackgroundColor3 = s and Color3.new(1,1,1) or Color3.fromRGB(255,90,90)
+            callback(s)
         end)
     end
 
@@ -768,33 +667,29 @@ local function CreateMainGUI()
         if s then
             if #SelectedRarity == 0 or #SelectedArea == 0 then
                 AutoSteal = false
-                Notify("⚠️ Pili muna sa Config! (Rarity + Area)", "error")
+                Notify("⚠️ Pili muna sa Config!", "error")
             else
-                Notify("🥚 Auto Steal: ON! (" .. #SelectedRarity .. " rarity, " .. #SelectedArea .. " area)", "success")
+                Notify("🥚 Auto Steal: ON!", "success")
             end
         else
             Notify("🥚 Auto Steal: OFF", "info")
         end
     end)
-
     MakeToggle(2, "🏃", "Auto Treadmill", function(s)
         AutoTreadmill = s
-        Notify(s and "🏃 Auto Treadmill: ON! (Plot mo lang!)" or "🏃 Auto Treadmill: OFF", s and "success" or "info")
+        Notify(s and "🏃 Treadmill: ON (plot mo lang!)" or "🏃 Treadmill: OFF", s and "success" or "info")
     end)
-
     MakeToggle(3, "🛡️", "Anti-Ragdoll", function(s)
         AntiRagdoll = s
-        Notify(s and "🛡️ Anti-Ragdoll: ON!" or "🛡️ Anti-Ragdoll: OFF", s and "success" or "info")
+        Notify(s and "🛡️ Anti-Ragdoll: ON!" or "OFF", s and "success" or "info")
     end)
-
     MakeToggle(4, "❤️", "Anti-Hit (Passive)", function(s)
         AntiHit = s
-        Notify(s and "❤️ Anti-Hit: ON! (Walang bounce!)" or "❤️ Anti-Hit: OFF", s and "success" or "info")
+        Notify(s and "❤️ Anti-Hit: ON!" or "OFF", s and "success" or "info")
     end)
-
     MakeToggle(5, "🤖", "Anti-Captcha", function(s)
         AntiCaptcha = s
-        Notify(s and "🤖 Anti-Captcha: ON!" or "🤖 Anti-Captcha: OFF", s and "success" or "info")
+        Notify(s and "🤖 Anti-Captcha: ON!" or "OFF", s and "success" or "info")
     end)
 
     -- CONFIG PAGE
@@ -804,11 +699,10 @@ local function CreateMainGUI()
     configPage.BackgroundTransparency = 1
     configPage.BorderSizePixel = 0
     configPage.ScrollBarThickness = 3
-    configPage.CanvasSize = UDim2.new(0, 0, 0, 0)
+    configPage.CanvasSize = UDim2.new(0,0,0,0)
     configPage.AutomaticCanvasSize = Enum.AutomaticSize.Y
     configPage.Visible = false
     configPage.Parent = main
-
     local cfg = Instance.new("UIListLayout")
     cfg.Padding = UDim.new(0, 10)
     cfg.Parent = configPage
@@ -816,7 +710,7 @@ local function CreateMainGUI()
     local function MakeMultiSelect(order, titleText, items, selectedTable, isRarity)
         local section = Instance.new("Frame")
         section.Size = UDim2.new(1, 0, 0, 34 + math.ceil(#items / 2) * 36 + 8)
-        section.BackgroundColor3 = Color3.fromRGB(24, 24, 36)
+        section.BackgroundColor3 = Color3.fromRGB(24,24,36)
         section.LayoutOrder = order
         section.Parent = configPage
         Instance.new("UICorner", section).CornerRadius = UDim.new(0, 12)
@@ -826,7 +720,7 @@ local function CreateMainGUI()
         st.Position = UDim2.new(0, 12, 0, 4)
         st.BackgroundTransparency = 1
         st.Text = titleText
-        st.TextColor3 = Color3.fromRGB(0, 255, 150)
+        st.TextColor3 = Color3.fromRGB(0,255,150)
         st.TextSize = 13
         st.Font = Enum.Font.GothamBold
         st.TextXAlignment = Enum.TextXAlignment.Left
@@ -837,7 +731,6 @@ local function CreateMainGUI()
         grid.Position = UDim2.new(0, 8, 0, 30)
         grid.BackgroundTransparency = 1
         grid.Parent = section
-
         local g = Instance.new("UIGridLayout")
         g.CellSize = UDim2.new(0.5, -4, 0, 30)
         g.CellPadding = UDim2.new(0, 6, 0, 6)
@@ -845,9 +738,9 @@ local function CreateMainGUI()
 
         for _, item in ipairs(items) do
             local b = Instance.new("TextButton")
-            b.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+            b.BackgroundColor3 = Color3.fromRGB(40,40,55)
             b.Text = item
-            b.TextColor3 = isRarity and RARITY_COLORS[item] or Color3.fromRGB(180, 180, 200)
+            b.TextColor3 = isRarity and RARITY_COLORS[item] or Color3.fromRGB(180,180,200)
             b.TextSize = 11
             b.Font = Enum.Font.GothamBold
             b.Parent = grid
@@ -857,12 +750,12 @@ local function CreateMainGUI()
                 local idx = table.find(selectedTable, item)
                 if idx then
                     table.remove(selectedTable, idx)
-                    b.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-                    b.TextColor3 = isRarity and RARITY_COLORS[item] or Color3.fromRGB(180, 180, 200)
+                    b.BackgroundColor3 = Color3.fromRGB(40,40,55)
+                    b.TextColor3 = isRarity and RARITY_COLORS[item] or Color3.fromRGB(180,180,200)
                 else
                     table.insert(selectedTable, item)
-                    b.BackgroundColor3 = Color3.fromRGB(0, 200, 110)
-                    b.TextColor3 = Color3.new(0, 0, 0)
+                    b.BackgroundColor3 = Color3.fromRGB(0,200,110)
+                    b.TextColor3 = Color3.new(0,0,0)
                 end
                 Notify("⚙️ " .. item .. ": " .. (idx and "OFF" or "ON"), "info")
             end)
@@ -882,13 +775,11 @@ local function CreateMainGUI()
                 {Size = UDim2.new(0, 380, 0, 480)}):Play()
         end
     end)
-
     closeBtn.MouseButton1Click:Connect(function()
         TweenService:Create(main, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
             {Size = UDim2.new(0, 0, 0, 0)}):Play()
         task.delay(0.3, function() main.Visible = false end)
     end)
-
     cheatsTab.MouseButton1Click:Connect(function() SwitchTab("Cheats") end)
     configTab.MouseButton1Click:Connect(function() SwitchTab("Config") end)
 
@@ -897,79 +788,76 @@ local function CreateMainGUI()
     notif.Name = "KyzenNotif"
     notif.Size = UDim2.new(0, 300, 0, 46)
     notif.Position = UDim2.new(1, 320, 0, 15)
-    notif.BackgroundColor3 = Color3.fromRGB(20, 20, 32)
+    notif.BackgroundColor3 = Color3.fromRGB(20,20,32)
+    notif.Visible = false
     notif.Parent = gui
     Instance.new("UICorner", notif).CornerRadius = UDim.new(0, 12)
-    local nstroke = Instance.new("UIStroke")
-    nstroke.Color = Color3.fromRGB(0, 220, 120)
-    nstroke.Thickness = 1.5
-    nstroke.Parent = notif
-    local nmsg = Instance.new("TextLabel")
-    nmsg.Name = "Msg"
-    nmsg.Size = UDim2.new(1, -16, 1, 0)
-    nmsg.Position = UDim2.new(0, 8, 0, 0)
-    nmsg.BackgroundTransparency = 1
-    nmsg.Text = "⚡ Kyzen Hub v5.1!"
-    nmsg.TextColor3 = Color3.new(1,1,1)
-    nmsg.TextSize = 13
-    nmsg.Font = Enum.Font.Gotham
-    nmsg.TextWrapped = true
-    nmsg.Parent = notif
+    local ns = Instance.new("UIStroke")
+    ns.Color = Color3.fromRGB(0,220,120)
+    ns.Thickness = 1.5
+    ns.Parent = notif
+    local nm = Instance.new("TextLabel")
+    nm.Name = "Msg"
+    nm.Size = UDim2.new(1, -16, 1, 0)
+    nm.Position = UDim2.new(0, 8, 0, 0)
+    nm.BackgroundTransparency = 1
+    nm.TextColor3 = Color3.new(1,1,1)
+    nm.TextSize = 13
+    nm.Font = Enum.Font.Gotham
+    nm.TextWrapped = true
+    nm.Parent = notif
+    NotifyFrame = notif
 
     SwitchTab("Cheats")
+
+    print("[KYZEN 6/8] Main GUI DONE! K button: " .. tostring(kbtn.Visible) .. " | Parent: " .. gui.Parent:GetFullName())
 
     task.spawn(function()
         task.wait(1)
         MyPlot = FindMyPlot()
-        if MyPlot then
-            Notify("🏠 Plot mo na-detect: " .. MyPlot.Name, "success")
-        else
-            Notify("⚠️ Plot di pa na-detect", "warning")
-        end
-        if RF_Carry then
-            Notify("🔗 Steal remote: CONNECTED!", "success")
-        else
-            Notify("🔗 Steal remote: di nakita (prompt mode)", "warning")
-        end
+        if MyPlot then Notify("🏠 Plot mo: " .. MyPlot.Name, "success")
+        else Notify("⚠️ Plot di pa na-detect", "warning") end
+        Notify(RF_Carry and "🔗 Steal remote: CONNECTED!" or "🔗 Remote: di nakita (prompt mode)", RF_Carry and "success" or "warning")
     end)
-    Notify("⚡ Kyzen Hub v5.1 LOADED!", "success")
+    Notify("⚡ Kyzen Hub v5.2 LOADED!", "success")
 end
 
--- ══════════ LOADING SCREEN (maliit, auto-dismiss!) ══════════
+-- ═══ LOADING SCREEN (same GUI parent fix!) ═══
 local function CreateLoadingGUI()
-    local pg = Player:WaitForChild("PlayerGui")
     local gui = Instance.new("ScreenGui")
     gui.Name = "KyzenLoading"
     gui.ResetOnSpawn = false
-    gui.Parent = pg
+    gui.DisplayOrder = 99999
+    gui.IgnoreGuiInset = true
+    gui.Parent = GUIParent
 
     local card = Instance.new("Frame")
     card.Size = UDim2.new(0, 320, 0, 150)
     card.Position = UDim2.new(0.5, -160, 0.5, -75)
-    card.BackgroundColor3 = Color3.fromRGB(18, 18, 26)
+    card.BackgroundColor3 = Color3.fromRGB(18,18,26)
     card.Parent = gui
     Instance.new("UICorner", card).CornerRadius = UDim.new(0, 14)
     local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(0, 220, 120)
+    stroke.Color = Color3.fromRGB(0,220,120)
     stroke.Thickness = 2
     stroke.Parent = card
 
-    local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, 0, 0, 40)
-    title.Position = UDim2.new(0, 0, 0, 20)
-    title.BackgroundTransparency = 1
-    title.Text = "⚡ Kyzen Hub v5.1"
-    title.TextColor3 = Color3.fromRGB(0, 255, 150)
-    title.TextSize = 24
-    title.Font = Enum.Font.GothamBold
-    title.Parent = card
+    local t = Instance.new("TextLabel")
+    t.Size = UDim2.new(1, 0, 0, 40)
+    t.Position = UDim2.new(0, 0, 0, 20)
+    t.BackgroundTransparency = 1
+    t.Text = "⚡ Kyzen Hub v5.2"
+    t.TextColor3 = Color3.fromRGB(0,255,150)
+    t.TextSize = 24
+    t.Font = Enum.Font.GothamBold
+    t.Parent = card
 
     local status = Instance.new("TextLabel")
     status.Size = UDim2.new(1, 0, 0, 24)
     status.Position = UDim2.new(0, 0, 0, 62)
     status.BackgroundTransparency = 1
     status.Text = "🥚 Naglo-load..."
-    status.TextColor3 = Color3.fromRGB(180, 200, 220)
+    status.TextColor3 = Color3.fromRGB(180,200,220)
     status.TextSize = 13
     status.Font = Enum.Font.Gotham
     status.Parent = card
@@ -983,28 +871,25 @@ local function CreateLoadingGUI()
         end
     end)
 
+    print("[KYZEN 7/8] Loading GUI shown (parent: " .. GUIParent.Name .. ")")
     task.wait(2)
     pcall(function() gui:Destroy() end)
-    -- SAFETY NET: siguradong mawala ang loading kahit may error
-    task.delay(0.5, function()
-        local leftover = pg:FindFirstChild("KyzenLoading")
-        if leftover then leftover:Destroy() end
-    end)
-    pcall(CreateMainGUI)
-    -- FINAL SAFETY: kung walang main GUI na lumabas, ulit na may error screen
+    CreateMainGUI()
+
+    -- FINAL CHECK: siguradong may K button!
     task.delay(1, function()
-        if not pg:FindFirstChild("KyzenHub") then
-            ShowFatalError("Main GUI di nag-create! Restart the script or send this to HAI.")
+        local exists = GUIParent:FindFirstChild("KyzenHub")
+        if exists then
+            print("[KYZEN 8/8] SUCCESS! KyzenHub GUI exists sa " .. GUIParent.Name)
+        else
+            print("[KYZEN 8/8] FAIL! KyzenHub GUI di nag-exist — i-send ang prints kay HAI!")
         end
     end)
 end
 
-end) -- END ng main pcall
-
--- Kung may error sa buong script, ipakita sa screen!
-if not OK then
-    ShowFatalError(MAINERR)
-    warn("[KYZEN HUB ERROR] " .. tostring(MAINERR))
+print("[KYZEN] Executing loading...")
+local okLoad, errLoad = pcall(CreateLoadingGUI)
+if not okLoad then
+    print("[KYZEN FATAL] " .. tostring(errLoad))
+    if setclipboard then pcall(setclipboard, tostring(errLoad)) end
 end
-
-print("═══ KYZEN HUB v5.1 FULL — LOADED! ═══")
